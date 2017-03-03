@@ -33,7 +33,6 @@
 -define(DEFAULT_SERIES_NAME, undefined).
 -define(DEFAULT_FORMATTING, []).
 -define(DEFAULT_TIMESTAMP_OPT, false).
--define(DEFAULT_BATCH_WINDOW_SIZE, 0).
 -define(DEFAULT_AUTOSUBSCRIBE, false).
 -define(DEFAULT_SUBSCRIPTIONS_MOD, undefined).
 
@@ -57,8 +56,6 @@
                 port :: inet:port_number(),  % for udp
                 timestamping :: boolean(),
                 precision :: precision(),
-                collected_metrics = #{} :: map(),
-                batch_window_size = 0 :: integer(),
                 tags :: map(),
                 series_name :: atom(),
                 formatting :: list(),
@@ -81,7 +78,6 @@ exometer_init(Opts) ->
     Username = get_opt(username, Opts, ?DEFAULT_USERNAME),
     Password = get_opt(password, Opts, ?DEFAULT_PASSWORD),
     TimestampOpt = get_opt(timestamping, Opts, ?DEFAULT_TIMESTAMP_OPT),
-    BatchWinSize = get_opt(batch_window_size, Opts, ?DEFAULT_BATCH_WINDOW_SIZE),
     {Timestamping, Precision} = evaluate_timestamp_opt(TimestampOpt),
     Tags = [{key(Key), Value} || {Key, Value} <- get_opt(tags, Opts, [])],
     SeriesName = get_opt(series_name, Opts, ?DEFAULT_SERIES_NAME),
@@ -100,7 +96,6 @@ exometer_init(Opts) ->
                     tags = MergedTags,
                     series_name = SeriesName,
                     formatting = Formatting,
-                    batch_window_size = BatchWinSize,
                     autosubscribe = Autosubscribe,
                     subscriptions_module = SubscriptionsMod,
                     metrics = maps:new()},
@@ -203,16 +198,6 @@ exometer_cast(_Unknown, State) ->
 -spec exometer_info(any(), state()) -> callback_result().
 exometer_info({exometer_influxdb, reconnect}, State) ->
     reconnect(State);
-exometer_info({exometer_influxdb, send}, 
-              #state{precision = Precision,
-                     collected_metrics = CollectedMetrics} = State) ->
-    if CollectedMetrics /= #{} ->
-        Packets = [make_packet(MetricName, Tags, Fileds, Timestamping, Precision) ++ "\n"
-                   || {_, {MetricName, Tags, Fileds, Timestamping}} 
-                      <- maps:to_list(CollectedMetrics)],
-        send(Packets, State#state{collected_metrics = #{}});
-    true -> {ok, State}
-    end;
 exometer_info(_Unknown, State) ->
     {ok, State}.
 
@@ -284,38 +269,15 @@ reconnect(#state{protocol = Protocol, host = Host, port = Port,
             {ok, State#state{connection = undefined}}
     end.
 
-prepare_batch_send(Time) ->
-    erlang:send_after(Time, ?MODULE, {exometer_influxdb, send}).
+%prepare_batch_send(Time) ->
+%    erlang:send_after(Time, ?MODULE, {exometer_influxdb, send}).
 
 prepare_reconnect() ->
     erlang:send_after(1000, ?MODULE, {exometer_influxdb, reconnect}).
 
 -spec maybe_send(list(), list(), map(), map(), state()) ->
     {ok, state()} | {error, term()}.
-maybe_send(OriginMetricName, MetricName, Tags0, Fields, 
-           #state{batch_window_size = BatchWinSize, 
-                  precision = Precision,
-                  timestamping = Timestamping,
-                  collected_metrics = CollectedMetrics} = State)
-  when BatchWinSize > 0 ->
-    NewCollectedMetrics = case maps:get(OriginMetricName, CollectedMetrics, not_found) of
-        {MetricName, Tags, Fields1} ->
-            NewFields = maps:merge(Fields, Fields1),
-            maps:put(OriginMetricName, 
-                     {MetricName, Tags, NewFields, Timestamping andalso unix_time(Precision)}, 
-                     CollectedMetrics);
-        {MetricName, Tags, Fields1, _OrigTimestamp} ->
-            NewFields = maps:merge(Fields, Fields1),
-            maps:put(OriginMetricName,
-                     {MetricName, Tags, NewFields, Timestamping andalso unix_time(Precision)},
-                     CollectedMetrics);
-        not_found -> 
-            maps:put(OriginMetricName, 
-                     {MetricName, Tags0, Fields, Timestamping andalso unix_time(Precision)}, 
-                     CollectedMetrics)
-    end,
-    maps:size(CollectedMetrics) == 0 andalso prepare_batch_send(BatchWinSize),
-    {ok, State#state{collected_metrics = NewCollectedMetrics}};
+
 maybe_send(_, MetricName, Tags, Fields,
            #state{timestamping = Timestamping, precision = Precision} = State) ->
     Packet = make_packet(MetricName, Tags, Fields, Timestamping, Precision),
