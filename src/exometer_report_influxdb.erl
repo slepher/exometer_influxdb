@@ -124,8 +124,8 @@ exometer_report(Metric, DataPoint, _Extra, Value,
                 #state{metrics = Metrics} = State) ->
     case maps:get(Metric, Metrics, not_found) of
         {MetricName, Tags} ->
-            maybe_send(Metric, MetricName, Tags,
-                       maps:from_list([{DataPoint, Value}]), State);
+            send(Metric, MetricName, Tags,
+                 maps:from_list([{DataPoint, Value}]), State);
         Error ->
             ?warning("InfluxDB reporter got trouble when looking ~p metric's tag: ~p",
                      [Metric, Error]),
@@ -142,8 +142,8 @@ exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra,
           fun({Metric, DataPoints}, {StateAccIn, ErrorsAccIn}) -> 
                   case maps:get(Metric, Metrics, not_found) of
                       {MetricName, Tags} ->
-                          case maybe_send(Metric, MetricName, Tags, 
-                                          maps:from_list(DataPoints), State) of
+                          case send(Metric, MetricName, Tags, 
+                                    maps:from_list(DataPoints), State) of
                               {ok, NState} -> 
                                   {NState, ErrorsAccIn};
                               {error, Reason} -> 
@@ -159,6 +159,7 @@ exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra,
         [] -> {ok, NState};
         _  -> Errors
     end. 
+
 
 -spec exometer_subscribe(exometer_report:metric(),
                          exometer_report:datapoint(),
@@ -192,6 +193,12 @@ exometer_call(_Unknown, _From, State) ->
     {ok, State}.
 
 -spec exometer_cast(any(), state()) -> {noreply, state()} | any().
+exometer_cast({flash, Metric, DataPoints}, State) ->
+    case exometer_report_bulk([{Metric, DataPoints}], [], State) of
+        {ok, NState} -> {noreply, NState};
+        [Error]     -> Error
+    end;
+
 exometer_cast(_Unknown, State) ->
     {ok, State}.
 
@@ -269,17 +276,13 @@ reconnect(#state{protocol = Protocol, host = Host, port = Port,
             {ok, State#state{connection = undefined}}
     end.
 
-%prepare_batch_send(Time) ->
-%    erlang:send_after(Time, ?MODULE, {exometer_influxdb, send}).
-
 prepare_reconnect() ->
     erlang:send_after(1000, ?MODULE, {exometer_influxdb, reconnect}).
 
--spec maybe_send(list(), list(), map(), map(), state()) ->
+-spec send(list(), list(), map(), map(), state()) ->
     {ok, state()} | {error, term()}.
-
-maybe_send(_, MetricName, Tags, Fields,
-           #state{timestamping = Timestamping, precision = Precision} = State) ->
+send(_, MetricName, Tags, Fields,
+     #state{timestamping = Timestamping, precision = Precision} = State) ->
     Packet = make_packet(MetricName, Tags, Fields, Timestamping, Precision),
     send(Packet, State).
 
