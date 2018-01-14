@@ -4,6 +4,7 @@
 
 %% gen_server callbacks
 -export([exometer_init/1,
+         exometer_init/2,
          exometer_info/2,
          exometer_cast/2,
          exometer_call/3,
@@ -48,7 +49,9 @@
 -type precision() :: n | u | ms | s | m | h.
 -type protocol() :: http | udp.
 
--record(state, {protocol :: protocol(),
+-record(state, {module :: atom(),
+                pstate :: any(),
+                protocol :: protocol(),
                 db :: binary(), % for http
                 username :: undefined | binary(), % for http
                 password :: undefined | binary(), % for http
@@ -65,6 +68,12 @@
                 connection :: gen_udp:socket() | reference()}).
 -type state() :: #state{}.
 
+-callback exometer_init(Module :: atom(), Opts :: options()) ->
+    {ok, State :: any()} | 
+    {error, Reason :: any()}.
+
+-callback resharp_datapoints(Metric :: any(), DataPoints :: list()) ->
+    {ok, Table :: list() | atom(), NewDataPoints :: list()}.
 
 %% ===================================================================
 %% Public API
@@ -85,6 +94,7 @@ exometer_init(Opts) ->
     Autosubscribe = get_opt(autosubscribe, Opts, ?DEFAULT_AUTOSUBSCRIBE),
     SubscriptionsMod = get_opt(subscriptions_module, Opts, ?DEFAULT_SUBSCRIPTIONS_MOD),
     MergedTags = merge_tags([{<<"host">>, net_adm:localhost()}, {<<"node">>, node()}], Tags),
+
     State =  #state{protocol = Protocol,
                     db = DB,
                     username = Username,
@@ -99,6 +109,7 @@ exometer_init(Opts) ->
                     autosubscribe = Autosubscribe,
                     subscriptions_module = SubscriptionsMod,
                     metrics = maps:new()},
+
     code:load_file(hackney_tcp),
     code:load_file(hackney_ssl),
     case connect(Protocol, Host, Port, Username, Password) of
@@ -109,6 +120,58 @@ exometer_init(Opts) ->
             ?error("InfluxDB reporter connecting error: ~p", [Error]),
             prepare_reconnect(),
             {ok, State}
+    end.
+
+-spec exometer_init(atom(), options()) -> callback_result().
+exometer_init(Module, Opts) ->
+    Host = get_opt(host, Opts, ?DEFAULT_HOST),
+    Protocol = get_opt(protocol, Opts, ?DEFAULT_PROTOCOL),
+    Port = get_opt(port, Opts, ?DEFAULT_PORT),
+    DB = get_opt(db, Opts, ?DEFAULT_DB),
+    Username = get_opt(username, Opts, ?DEFAULT_USERNAME),
+    Password = get_opt(password, Opts, ?DEFAULT_PASSWORD),
+    TimestampOpt = get_opt(timestamping, Opts, ?DEFAULT_TIMESTAMP_OPT),
+    {Timestamping, Precision} = evaluate_timestamp_opt(TimestampOpt),
+    Tags = [{key(Key), Value} || {Key, Value} <- get_opt(tags, Opts, [])],
+    SeriesName = get_opt(series_name, Opts, ?DEFAULT_SERIES_NAME),
+    Formatting = get_opt(formatting, Opts, ?DEFAULT_FORMATTING),
+    Autosubscribe = get_opt(autosubscribe, Opts, ?DEFAULT_AUTOSUBSCRIBE),
+    SubscriptionsMod = get_opt(subscriptions_module, Opts, ?DEFAULT_SUBSCRIPTIONS_MOD),
+    MergedTags = merge_tags([{<<"host">>, net_adm:localhost()}, {<<"node">>, node()}], Tags),
+
+    State =  #state{module = Module,
+                    protocol = Protocol,
+                    db = DB,
+                    username = Username,
+                    password = Password,
+                    host = binary_to_list(Host),
+                    port = Port,
+                    timestamping = Timestamping,
+                    precision = Precision,
+                    tags = MergedTags,
+                    series_name = SeriesName,
+                    formatting = Formatting,
+                    autosubscribe = Autosubscribe,
+                    subscriptions_module = SubscriptionsMod,
+                    metrics = maps:new()},
+
+    State2 = case Module:exometer_init(Opts) of
+                 {ok, PState} ->
+                     State#state{pstate = PState};
+                 {error, _Reason} ->
+                     State
+             end,
+
+    code:load_file(hackney_tcp),
+    code:load_file(hackney_ssl),
+    case connect(Protocol, Host, Port, Username, Password) of
+        {ok, Connection} ->
+            ?info("InfluxDB reporter connecting success: ~p", [Opts]),
+            {ok, State2#state{connection = Connection}};
+        Error ->
+            ?error("InfluxDB reporter connecting error: ~p", [Error]),
+            prepare_reconnect(),
+            {ok, State2}
     end.
 
 -spec exometer_report(exometer_report:metric(),
@@ -136,7 +199,7 @@ exometer_report_bulk(_Found, _Extra, #state{connection = undefined} = State) ->
     ?info("InfluxDB reporter isn't connected and will reconnect."),
     {ok, State};
 exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra, 
-                     #state{metrics = Metrics} = State) ->
+                     #state{metrics = Metrics, module = undefined} = State) ->
     {NState, Errors} = 
         lists:foldl(
           fun({Metric, DataPoints}, {StateAccIn, ErrorsAccIn}) -> 
@@ -148,6 +211,41 @@ exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra,
                                   {NState, ErrorsAccIn};
                               {error, Reason} -> 
                                   {StateAccIn, [{Metric, Reason} | ErrorsAccIn]}
+                          end;
+                      Error ->
+                          ?warning("InfluxDB reporter got trouble when looking ~p metric's tag: ~p",
+                                   [Metric, Error]),
+                          {StateAccIn,[{Metric, Error} | ErrorsAccIn]}
+                  end
+          end, {State, []}, Found),
+    case Errors of 
+        [] -> {ok, NState};
+        _  -> Errors
+    end;
+
+exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra, 
+                     #state{metrics = Metrics} = State) ->
+    #state{module = Module} = State,
+    {NState, Errors} = 
+        lists:foldl(
+          fun({Metric, DataPoints}, {StateAccIn, ErrorsAccIn}) -> 
+                  case maps:get(Metric, Metrics, not_found) of
+                      {MetricName, Tags} ->
+                          case Module:resharp_datapoints(MetricName, DataPoints) of
+                              {ok, NMetricName, NDataPoints} ->
+                                  %case send(Metric, MetricName, Tags, 
+                                  %          maps:from_list(DataPoints), State) of
+                                  case send(Metric, NMetricName, Tags, 
+                                            maps:from_list(NDataPoints), State) of
+                                      {ok, NState} -> 
+                                          {NState, ErrorsAccIn};
+                                      {error, Reason} -> 
+                                          {StateAccIn, [{Metric, Reason} | ErrorsAccIn]}
+                                  end;
+                              Err ->
+                                  ?warning("InfluxDB reporter got trouble when ~p resharp ~p metric: ~p",
+                                   [Module, Metric, Err]),
+                          {StateAccIn,[{Metric, Err} | ErrorsAccIn]}
                           end;
                       Error ->
                           ?warning("InfluxDB reporter got trouble when looking ~p metric's tag: ~p",
