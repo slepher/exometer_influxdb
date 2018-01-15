@@ -50,7 +50,6 @@
 -type protocol() :: http | udp.
 
 -record(state, {module :: atom(),
-                pstate :: any(),
                 protocol :: protocol(),
                 db :: binary(), % for http
                 username :: undefined | binary(), % for http
@@ -68,9 +67,6 @@
                 connection :: gen_udp:socket() | reference()}).
 -type state() :: #state{}.
 
--callback exometer_init(Module :: atom(), Opts :: options()) ->
-    {ok, State :: any()} | 
-    {error, Reason :: any()}.
 
 -callback resharp_datapoints(Metric :: any(), DataPoints :: list()) ->
     {ok, Table :: list() | atom(), NewDataPoints :: list()}.
@@ -155,23 +151,16 @@ exometer_init(Module, Opts) ->
                     subscriptions_module = SubscriptionsMod,
                     metrics = maps:new()},
 
-    State2 = case Module:exometer_init(Opts) of
-                 {ok, PState} ->
-                     State#state{pstate = PState};
-                 {error, _Reason} ->
-                     State
-             end,
-
     code:load_file(hackney_tcp),
     code:load_file(hackney_ssl),
     case connect(Protocol, Host, Port, Username, Password) of
         {ok, Connection} ->
             ?info("InfluxDB reporter connecting success: ~p", [Opts]),
-            {ok, State2#state{connection = Connection}};
+            {ok, State#state{connection = Connection}};
         Error ->
             ?error("InfluxDB reporter connecting error: ~p", [Error]),
             prepare_reconnect(),
-            {ok, State2}
+            {ok, State}
     end.
 
 -spec exometer_report(exometer_report:metric(),
