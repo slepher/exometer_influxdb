@@ -214,10 +214,11 @@ exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra,
 
 exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra, 
                      #state{metrics = Metrics} = State) ->
-    #state{module = Module} = State,
+    #state{module = Module, tags = Tags} = State,
     {NState, Errors} = 
         lists:foldl(
           fun({Metric, DataPoints}, {StateAccIn, ErrorsAccIn}) -> 
+                  
                   case maps:get(Metric, Metrics, not_found) of
                       {MetricName, Tags} ->
                           case Module:resharp_datapoints(MetricName, DataPoints) of
@@ -280,6 +281,19 @@ exometer_call(_Unknown, _From, State) ->
     {ok, State}.
 
 -spec exometer_cast(any(), state()) -> {noreply, state()} | any().
+exometer_cast({subscribe, Metric, SubscribeOpts}, 
+              #state{metrics=Metrics, tags=DefaultTags,
+                     series_name=DefaultSeriesName,
+                     formatting=DefaultFormatting} = State) ->
+    {MetricName, Tags} = evaluate_subscription_options(Metric, SubscribeOpts, DefaultTags,
+                                                       DefaultSeriesName, DefaultFormatting),
+    case MetricName of
+        [] -> exit({invalid_metric_name, MetricName});
+        _  ->
+            NewMetrics = maps:put(Metric, {MetricName, Tags}, Metrics),
+            {ok, State#state{metrics = NewMetrics}}
+    end;
+
 exometer_cast({flash, Metric, DataPoints}, State) ->
     case exometer_report_bulk([{Metric, DataPoints}], [], State) of
         {ok, NState} -> {noreply, NState};
