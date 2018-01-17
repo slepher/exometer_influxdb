@@ -212,35 +212,45 @@ exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra,
         _  -> Errors
     end;
 
-exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra, 
+exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, Extra, 
                      #state{metrics = Metrics} = State) ->
-    #state{module = Module, tags = Tags} = State,
+    #state{module = Module, 
+           metrics = Metrics, 
+           tags = DefaultTags,
+           series_name = DefaultSeriesName,
+           formatting = DefaultFormatting} = State,
     {NState, Errors} = 
         lists:foldl(
           fun({Metric, DataPoints}, {StateAccIn, ErrorsAccIn}) -> 
-                  
-                  case maps:get(Metric, Metrics, not_found) of
-                      {MetricName, Tags} ->
-                          case Module:resharp_datapoints(MetricName, DataPoints) of
-                              {ok, NMetricName, NDataPoints} ->
-                                  %case send(Metric, MetricName, Tags, 
-                                  %          maps:from_list(DataPoints), State) of
-                                  case send(Metric, NMetricName, Tags, 
-                                            maps:from_list(NDataPoints), State) of
-                                      {ok, NState} -> 
-                                          {NState, ErrorsAccIn};
-                                      {error, Reason} -> 
-                                          {StateAccIn, [{Metric, Reason} | ErrorsAccIn]}
-                                  end;
-                              Err ->
-                                  ?warning("InfluxDB reporter got trouble when ~p resharp ~p metric: ~p",
+                  {MetricName, Tags, NState0} = 
+                      case maps:get(Metric, Metrics, not_found) of
+                          {MetricName0, Tags0} -> {MetricName0, Tags0, State};
+                          Error ->
+                              ?warning("InfluxDB reporter got trouble when looking ~p metric's tag: ~p",
+                                       [Metric, Error]),
+                              {MetricName2, Tags2} = 
+                                  evaluate_subscription_options(Metric, Extra, 
+                                                                DefaultTags,
+                                                                DefaultSeriesName, 
+                                                                DefaultFormatting),
+                              NewMetrics = maps:put(Metric, {MetricName2, Tags2}, Metrics),
+                              State2 = State#state{metrics = NewMetrics},
+                              {MetricName2, Tags2, State2}
+                      end,
+
+                  case Module:resharp_datapoints(MetricName, DataPoints) of
+                      {ok, NMetricName, MoreTags, NDataPoints} ->
+                          case send(Metric, NMetricName, merge_tags(Tags, MoreTags), 
+                                    maps:from_list(NDataPoints), NState0) of
+                              {ok, NState} -> 
+                                  {NState, ErrorsAccIn};
+                              {error, Reason} -> 
+                                  {StateAccIn, [{Metric, Reason} | ErrorsAccIn]}
+                          end;
+                      Err ->
+                          ?warning("InfluxDB reporter got trouble when ~p resharp ~p metric: ~p",
                                    [Module, Metric, Err]),
                           {StateAccIn,[{Metric, Err} | ErrorsAccIn]}
-                          end;
-                      Error ->
-                          ?warning("InfluxDB reporter got trouble when looking ~p metric's tag: ~p",
-                                   [Metric, Error]),
-                          {StateAccIn,[{Metric, Error} | ErrorsAccIn]}
                   end
           end, {State, []}, Found),
     case Errors of 
@@ -281,19 +291,6 @@ exometer_call(_Unknown, _From, State) ->
     {ok, State}.
 
 -spec exometer_cast(any(), state()) -> {noreply, state()} | any().
-exometer_cast({subscribe, Metric, SubscribeOpts}, 
-              #state{metrics=Metrics, tags=DefaultTags,
-                     series_name=DefaultSeriesName,
-                     formatting=DefaultFormatting} = State) ->
-    {MetricName, Tags} = evaluate_subscription_options(Metric, SubscribeOpts, DefaultTags,
-                                                       DefaultSeriesName, DefaultFormatting),
-    case MetricName of
-        [] -> exit({invalid_metric_name, MetricName});
-        _  ->
-            NewMetrics = maps:put(Metric, {MetricName, Tags}, Metrics),
-            {ok, State#state{metrics = NewMetrics}}
-    end;
-
 exometer_cast({flash, Metric, DataPoints}, State) ->
     case exometer_report_bulk([{Metric, DataPoints}], [], State) of
         {ok, NState} -> {noreply, NState};
