@@ -213,18 +213,18 @@ exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, _Extra,
     end;
 
 exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, Extra, 
-                     #state{metrics = Metrics} = State) ->
-    #state{module = Module, 
-           metrics = Metrics, 
+                     #state{} = State) ->
+    #state{module = Module,  
            tags = DefaultTags,
            series_name = DefaultSeriesName,
            formatting = DefaultFormatting} = State,
     {NState, Errors} = 
         lists:foldl(
           fun({Metric, DataPoints}, {StateAccIn, ErrorsAccIn}) -> 
+                  #state{metrics = Metrics} = StateAccIn,
                   {MetricName, Tags, NState0} = 
                       case maps:get(Metric, Metrics, not_found) of
-                          {MetricName0, Tags0} -> {MetricName0, Tags0, State};
+                          {MetricName0, Tags0} -> {MetricName0, Tags0, StateAccIn};
                           Error ->
                               ?warning("InfluxDB reporter got trouble when looking ~p metric's tag: ~p",
                                        [Metric, Error]),
@@ -237,7 +237,6 @@ exometer_report_bulk([{_Metric,[{_DataPoint, _Value}|_]}|_] = Found, Extra,
                               State2 = State#state{metrics = NewMetrics},
                               {MetricName2, Tags2, State2}
                       end,
-
                   case Module:resharp_datapoints(MetricName, DataPoints) of
                       {ok, NMetricName, MoreTags, NDataPoints} ->
                           case send(Metric, NMetricName, merge_tags(Tags, MoreTags), 
