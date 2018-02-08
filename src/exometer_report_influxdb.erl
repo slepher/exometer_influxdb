@@ -374,7 +374,7 @@ reconnect(#state{protocol = Protocol, host = Host, port = Port,
     end.
 
 prepare_reconnect() ->
-    erlang:send_after(1000, ?MODULE, {exometer_influxdb, reconnect}).
+    erlang:send_after(1000, self(), {exometer_influxdb, reconnect}).
 
 -spec send(list(), list(), map(), map(), state()) ->
     {ok, state()} | {error, term()}.
