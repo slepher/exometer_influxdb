@@ -406,6 +406,7 @@ send(Packet, #state{protocol = Proto, connection= Connection,
             reconnect(State);
         {error, _} = Error ->
             ?error("InfluxDB reporter HTTP sending error: ~p", [Error]),
+            hackney_connect:close(Connection),
             reconnect(State)
     end;
 send(Packet, #state{protocol = udp, connection = Socket,
