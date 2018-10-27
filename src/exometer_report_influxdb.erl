@@ -106,8 +106,8 @@ exometer_init(Opts) ->
                     subscriptions_module = SubscriptionsMod,
                     metrics = maps:new()},
 
-    code:load_file(hackney_tcp),
-    code:load_file(hackney_ssl),
+    %code:load_file(hackney_tcp),
+    %code:load_file(hackney_ssl),
     case connect(Protocol, Host, Port, Username, Password) of
         {ok, Connection} ->
             ?info("InfluxDB reporter connecting success: ~p", [Opts]),
@@ -151,8 +151,8 @@ exometer_init(Module, Opts) ->
                     subscriptions_module = SubscriptionsMod,
                     metrics = maps:new()},
 
-    code:load_file(hackney_tcp),
-    code:load_file(hackney_ssl),
+    %code:load_file(hackney_tcp),
+    %code:load_file(hackney_ssl),
     case connect(Protocol, Host, Port, Username, Password) of
         {ok, Connection} ->
             ?info("InfluxDB reporter connecting success: ~p", [Opts]),
