@@ -403,6 +403,7 @@ send(Packet, #state{protocol = Proto, connection= Connection,
             {ok, Body} = hackney:body(Ref),
             ?warning("InfluxDB reporter got unexpected response with code ~p"
                      " and body: ~p. Reconnecting ...", [Status, Body]),
+            hackney_connect:close(Connection),
             reconnect(State);
         {error, _} = Error ->
             ?error("InfluxDB reporter HTTP sending error: ~p", [Error]),
